@@ -1,0 +1,20 @@
+# Core web framework and API
+fastapi>=0.104.0
+uvicorn>=0.24.0
+gradio>=5.0.0
+pydantic>=2.4.0
+
+# Translation and NLP
+transformers>=4.30.0
+torch>=2.0.0
+langdetect>=1.0.9
+
+# Document processing
+PyMuPDF>=1.23.0  # PDF processing
+python-docx>=1.1.0  # DOCX processing
+ebooklib>=0.18  # EPUB processing
+Pillow>=10.0.0  # Image processing
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

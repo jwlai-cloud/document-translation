@@ -1,0 +1,1 @@
+# Core services for file handling, preview, and quality assessment
