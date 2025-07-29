@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Python Ruff Linter",
+  "description": "Automatically runs Ruff linting on Python files whenever they are created or modified to ensure code quality and style compliance",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A Python file has been created or updated. Please run Ruff to lint the code and report any issues found. Use the command 'ruff check' to analyze the file for style violations, potential bugs, and code quality issues."
+  }
+}
