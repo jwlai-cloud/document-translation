@@ -53,7 +53,7 @@
   - Write unit tests for language detection accuracy and edge cases
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 8. Enhance translation service with context awareness
+- [x] 8. Enhance translation service with context awareness
 
   - Extend existing TranslationService to handle TextRegion objects with spatial context
   - Implement batch translation with context preservation between adjacent text regions
@@ -61,7 +61,7 @@
   - Write unit tests for context-aware translation and language pair validation
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
 
-- [ ] 9. Implement layout analysis engine
+- [x] 9. Implement layout analysis engine
 
   - Create LayoutAnalysisEngine to analyze spatial relationships between document elements
   - Implement text region identification with precise bounding box calculations

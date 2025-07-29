@@ -1,9 +1,8 @@
 """Enhanced translation service with context awareness."""
 
-from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
-from typing import List, Dict, Optional, Tuple
+from transformers import pipeline, AutoTokenizer
+from typing import List, Dict, Optional
 import logging
-import re
 from datetime import datetime
 import torch
 
@@ -20,7 +19,7 @@ from src.models.translation import (
     TranslationProgress,
 )
 from src.models.layout import TextRegion
-from src.config import SUPPORTED_LANGUAGES, LANGUAGE_NAMES
+from src.config import SUPPORTED_LANGUAGES
 
 
 class ContextAwareTranslationService(TranslationService):
@@ -80,8 +79,8 @@ class ContextAwareTranslationService(TranslationService):
         """
         try:
             self.logger.info(
-                f"Starting context-aware translation: {source_lang} -> {target_lang} "
-                f"({len(regions)} regions)"
+                f"Starting context-aware translation: {source_lang} -> "
+                f"{target_lang} ({len(regions)} regions)"
             )
 
             # Validate language pair
