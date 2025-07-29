@@ -10,10 +10,12 @@ from .base import (
 )
 from .pdf_parser import PDFParser
 from .docx_parser import DOCXParser
+from .epub_parser import EPUBParser
 
 # Register parsers in the global factory
 register_parser("pdf", PDFParser)
 register_parser("docx", DOCXParser)
+register_parser("epub", EPUBParser)
 
 __all__ = [
     'DocumentParser',
@@ -24,4 +26,5 @@ __all__ = [
     'register_parser',
     'PDFParser',
     'DOCXParser',
+    'EPUBParser',
 ]
