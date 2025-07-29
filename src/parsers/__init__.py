@@ -9,9 +9,11 @@ from .base import (
     register_parser,
 )
 from .pdf_parser import PDFParser
+from .docx_parser import DOCXParser
 
 # Register parsers in the global factory
 register_parser("pdf", PDFParser)
+register_parser("docx", DOCXParser)
 
 __all__ = [
     'DocumentParser',
@@ -21,4 +23,5 @@ __all__ = [
     'get_parser_factory',
     'register_parser',
     'PDFParser',
+    'DOCXParser',
 ]
