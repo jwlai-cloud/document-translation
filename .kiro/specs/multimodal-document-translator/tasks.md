@@ -109,7 +109,7 @@
   - Write unit tests for preview generation and navigation features
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
-- [ ] 15. Implement download service with format preservation
+- [x] 15. Implement download service with format preservation
 
   - Create DownloadService to generate translated documents in original formats
   - Add secure download link generation with appropriate file naming
