@@ -101,7 +101,7 @@
   - Write unit tests for upload validation and security measures
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [ ] 14. Create preview service with side-by-side comparison
+- [x] 14. Create preview service with side-by-side comparison
 
   - Implement PreviewService to generate side-by-side document previews
   - Add zoom and scroll functionality for detailed document inspection
