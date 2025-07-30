@@ -21,6 +21,18 @@ from src.layout.reconstruction_engine import DefaultLayoutReconstructionEngine
 from src.quality.assessment_service import QualityAssessmentService
 from src.services.download_service import DownloadService, DownloadRequest
 
+# Import comprehensive error handling system
+from src.errors import (
+    DocumentTranslationError,
+    FileProcessingError,
+    TranslationError,
+    LayoutProcessingError,
+    ErrorContext,
+    ErrorHandler,
+    RecoveryManager,
+    AutoRecoveryHandler
+)
+
 
 class TranslationStatus(Enum):
     """Status of translation job."""
@@ -37,26 +49,31 @@ class TranslationStatus(Enum):
     CANCELLED = "cancelled"
 
 
-class ErrorSeverity(Enum):
-    """Severity levels for errors."""
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-
 @dataclass
-class TranslationError:
-    """Represents an error during translation."""
+class TranslationJobError:
+    """Represents an error during translation job processing."""
     error_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     stage: str = ""
     error_type: str = ""
     message: str = ""
-    severity: ErrorSeverity = ErrorSeverity.MEDIUM
+    severity: str = "medium"  # Use string instead of enum for compatibility
     recoverable: bool = True
     recovery_suggestion: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
     details: Dict[str, Any] = field(default_factory=dict)
+    
+    @classmethod
+    def from_document_translation_error(cls, error: DocumentTranslationError, stage: str = ""):
+        """Create TranslationJobError from DocumentTranslationError."""
+        return cls(
+            stage=stage or error.context.stage or "",
+            error_type=error.category.value,
+            message=error.message,
+            severity=error.severity.value,
+            recoverable=error.recoverable,
+            recovery_suggestion="; ".join(error.suggestions),
+            details=error.to_dict()
+        )
 
 
 @dataclass
@@ -112,7 +129,7 @@ class TranslationJob:
     download_link_id: Optional[str] = None
     
     # Error handling
-    errors: List[TranslationError] = field(default_factory=list)
+    errors: List[TranslationJobError] = field(default_factory=list)
     retry_count: int = 0
     max_retries: int = 3
     
@@ -131,7 +148,7 @@ class TranslationJob:
     @property
     def has_critical_errors(self) -> bool:
         """Check if job has critical errors."""
-        return any(error.severity == ErrorSeverity.CRITICAL for error in self.errors)
+        return any(error.severity == "critical" for error in self.errors)
 
 
 @dataclass
@@ -158,6 +175,11 @@ class TranslationOrchestrator:
         """
         self.config = config or OrchestrationConfig()
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize comprehensive error handling system
+        self.error_handler = ErrorHandler()
+        self.recovery_manager = RecoveryManager()
+        self.auto_recovery = AutoRecoveryHandler(self.error_handler, self.recovery_manager)
         
         # Initialize services
         self.parser_factory = DocumentParserFactory()
@@ -335,6 +357,75 @@ class TranslationOrchestrator:
         """
         self.progress_callbacks.append(callback)
     
+    async def _handle_job_error(self, job: TranslationJob, error: Exception, 
+                               stage: str) -> bool:
+        """Handle job error with comprehensive error handling and recovery.
+        
+        Args:
+            job: Translation job
+            error: Exception that occurred
+            stage: Current processing stage
+            
+        Returns:
+            True if error was recovered, False otherwise
+        """
+        # Create error context
+        context = ErrorContext(
+            job_id=job.job_id,
+            file_path=job.file_path,
+            stage=stage,
+            component="orchestrator",
+            metadata={
+                'source_language': job.source_language,
+                'target_language': job.target_language,
+                'format_type': job.format_type,
+                'retry_count': job.retry_count
+            }
+        )
+        
+        # Create job context for recovery
+        job_context = {
+            'job_id': job.job_id,
+            'stage': stage,
+            'retry_count': job.retry_count,
+            'max_retries': job.max_retries,
+            'quality_threshold': self.config.quality_threshold,
+            'timeout': self.config.job_timeout_minutes * 60
+        }
+        
+        # Handle error with recovery
+        result = await self.auto_recovery.handle_error_with_recovery(
+            error, context, job_context
+        )
+        
+        # Create job error record
+        if isinstance(error, DocumentTranslationError):
+            job_error = TranslationJobError.from_document_translation_error(error, stage)
+        else:
+            job_error = TranslationJobError(
+                stage=stage,
+                error_type="unknown",
+                message=str(error),
+                severity="medium",
+                recoverable=result['recovery_successful']
+            )
+        
+        # Add error to job
+        job.errors.append(job_error)
+        
+        # Update stage with error
+        if stage in job.stages:
+            job.stages[stage].errors.append(job_error)
+        
+        # Log comprehensive error information
+        self.logger.error(
+            f"Job {job.job_id} error in stage {stage}: {error}. "
+            f"Recovery attempted: {result['recovery_attempted']}, "
+            f"Recovery successful: {result['recovery_successful']}"
+        )
+        
+        return result['recovery_successful']
+    
     def get_orchestrator_stats(self) -> Dict[str, Any]:
         """Get orchestrator statistics.
         
@@ -345,6 +436,10 @@ class TranslationOrchestrator:
         completed_count = len([j for j in self.job_history if j.status == TranslationStatus.COMPLETED])
         failed_count = len([j for j in self.job_history if j.status == TranslationStatus.FAILED])
         
+        # Get error handling statistics
+        error_stats = self.error_handler.get_error_statistics()
+        recovery_stats = self.recovery_manager.get_recovery_statistics()
+        
         return {
             'active_jobs': active_count,
             'completed_jobs': completed_count,
@@ -353,7 +448,11 @@ class TranslationOrchestrator:
             'max_concurrent_jobs': self.config.max_concurrent_jobs,
             'job_timeout_minutes': self.config.job_timeout_minutes,
             'average_processing_time': self._calculate_average_processing_time(),
-            'success_rate': self._calculate_success_rate()
+            'success_rate': self._calculate_success_rate(),
+            'error_handling': error_stats,
+            'recovery_system': recovery_stats,
+            'queue_length': len([j for j in self.active_jobs.values() 
+                               if j.status == TranslationStatus.PENDING])
         }
     
     def _initialize_job_stages(self, job: TranslationJob):
