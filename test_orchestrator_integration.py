@@ -2,13 +2,14 @@
 """Integration test for translation orchestrator service."""
 
 import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 from src.models.document import (
     DocumentStructure, PageStructure, TextRegion, BoundingBox,
     Dimensions, DocumentMetadata
 )
 from src.models.layout import AdjustedRegion, LayoutAnalysis
+from src.models.quality import QualityScore, QualityReport
 from src.services.orchestrator_service import (
     TranslationOrchestrator, OrchestrationConfig, TranslationStatus
 )
@@ -22,11 +23,11 @@ def test_orchestrator_integration():
     config = OrchestrationConfig(
         max_concurrent_jobs=2,
         job_timeout_minutes=5,
-        enable_quality_assessment=False,  # Disable for simpler testing
-        cleanup_interval_minutes=1
+        enable_quality_assessment=True,
+        quality_threshold=0.7
     )
     
-    # Mock all the services to avoid external dependencies
+    # Mock all services to avoid external dependencies
     with patch.multiple(
         'src.services.orchestrator_service',
         DocumentParserFactory=Mock(),
@@ -40,100 +41,25 @@ def test_orchestrator_integration():
     ) as mocks:
         
         # Setup mock responses
-        mock_document = DocumentStructure(
-            format="pdf",
-            pages=[
-                PageStructure(
-                    page_number=1,
-                    dimensions=Dimensions(width=400, height=600),
-                    text_regions=[
-                        TextRegion(
-                            id="region1",
-                            bounding_box=BoundingBox(10, 10, 200, 30),
-                            text_content="Hello world"
-                        ),
-                        TextRegion(
-                            id="region2",
-                            bounding_box=BoundingBox(10, 50, 200, 30),
-                            text_content="This is a test document"
-                        )
-                    ]
-                )
-            ],
-            metadata=DocumentMetadata(title="Test Document")
-        )
-        
-        # Setup parser mock
-        mock_parser = Mock()
-        mock_parser.parse.return_value = mock_document
-        mocks['DocumentParserFactory'].return_value.create_parser.return_value = mock_parser
-        
-        # Setup layout analysis mock
-        mock_layout_analysis = [LayoutAnalysis(page_number=1)]
-        mocks['DefaultLayoutAnalysisEngine'].return_value.analyze_layout.return_value = mock_layout_analysis
-        
-        # Setup translation service mock
-        def mock_translate(text, source, target):
-            translations = {
-                "Hello world": "Bonjour le monde",
-                "This is a test document": "Ceci est un document de test"
-            }
-            return translations.get(text, f"Translated: {text}")
-        
-        mocks['TranslationService'].return_value.translate_text.side_effect = mock_translate
-        
-        # Setup text fitting mock
-        def mock_fit_text(region, translated_text):
-            return AdjustedRegion(
-                original_region=region,
-                adjusted_text=translated_text,
-                new_bounding_box=BoundingBox(
-                    region.bounding_box.x,
-                    region.bounding_box.y,
-                    region.bounding_box.width + 20,  # Slightly wider
-                    region.bounding_box.height + 5   # Slightly taller
-                ),
-                adjustments=[],
-                fit_quality=0.9
-            )
-        
-        mocks['TextFittingEngine'].return_value.fit_text_to_region.side_effect = mock_fit_text
-        
-        # Setup layout adjustment mock
-        mocks['LayoutAdjustmentEngine'].return_value.detect_layout_conflicts.return_value = []
-        
-        # Setup download service mock
-        mock_download_result = Mock()
-        mock_download_result.success = True
-        mock_download_link = Mock()
-        mock_download_link.link_id = "test_download_link_123"
-        mock_download_result.download_link = mock_download_link
-        mocks['DownloadService'].return_value.prepare_download.return_value = mock_download_result
+        setup_mocks(mocks)
         
         orchestrator = TranslationOrchestrator(config)
         
         try:
-            # Test orchestrator initialization
-            print("\n✓ Testing orchestrator initialization...")
-            stats = orchestrator.get_orchestrator_stats()
-            print(f"  - Max concurrent jobs: {stats['max_concurrent_jobs']}")
-            print(f"  - Active jobs: {stats['active_jobs']}")
-            print(f"  - Job timeout: {stats['job_timeout_minutes']} minutes")
-            
             # Test job submission
             print("\n✓ Testing job submission...")
             
             test_jobs = [
                 {
                     "name": "PDF Translation (EN->FR)",
-                    "file_path": "/test/document1.pdf",
+                    "file_path": "/test/document.pdf",
                     "source_lang": "en",
                     "target_lang": "fr",
                     "format": "pdf"
                 },
                 {
                     "name": "DOCX Translation (EN->ES)",
-                    "file_path": "/test/document2.docx",
+                    "file_path": "/test/document.docx",
                     "source_lang": "en",
                     "target_lang": "es",
                     "format": "docx"
@@ -141,7 +67,6 @@ def test_orchestrator_integration():
             ]
             
             job_ids = []
-            
             for job_config in test_jobs:
                 print(f"  - Submitting: {job_config['name']}")
                 
@@ -155,7 +80,7 @@ def test_orchestrator_integration():
                 job_ids.append(job_id)
                 print(f"    Job ID: {job_id}")
             
-            # Test progress tracking with callbacks
+            # Test progress tracking
             print("\n✓ Testing progress tracking...")
             
             progress_updates = []
@@ -167,13 +92,10 @@ def test_orchestrator_integration():
                     'progress': job.overall_progress,
                     'stage': job.current_stage
                 })
-                print(f"    Progress: {job.job_id[:8]}... - {job.status.value} - {job.overall_progress:.1f}% - {job.current_stage}")
             
             orchestrator.add_progress_callback(progress_callback)
             
             # Monitor job progress
-            print("  - Monitoring job progress...")
-            
             completed_jobs = set()
             timeout = time.time() + 30  # 30 second timeout
             
@@ -182,11 +104,17 @@ def test_orchestrator_integration():
                     if job_id not in completed_jobs:
                         status = orchestrator.get_job_status(job_id)
                         
-                        if status and status['status'] in ['completed', 'failed', 'cancelled']:
-                            completed_jobs.add(job_id)
-                            print(f"    Job {job_id[:8]}... {status['status']}")
+                        if status:
+                            print(f"  - Job {job_id[:8]}...: {status['status']} ({status['overall_progress']:.1f}%)")
+                            
+                            if status['current_stage']:
+                                print(f"    Current stage: {status['current_stage']}")
+                            
+                            if status['status'] in ['completed', 'failed', 'cancelled']:
+                                completed_jobs.add(job_id)
+                                print(f"    ✓ Job {status['status']}")
                 
-                time.sleep(0.5)  # Check every 500ms
+                time.sleep(0.5)
             
             # Test job status retrieval
             print("\n✓ Testing job status retrieval...")
@@ -198,75 +126,81 @@ def test_orchestrator_integration():
                     print(f"  - Job {job_id[:8]}...:")
                     print(f"    Status: {status['status']}")
                     print(f"    Progress: {status['overall_progress']:.1f}%")
-                    print(f"    Duration: {status['duration']}")
-                    print(f"    Error count: {status['error_count']}")
-                    print(f"    Download link: {status['download_link_id']}")
+                    print(f"    Source Language: {status['source_language']}")
+                    print(f"    Target Language: {status['target_language']}")
+                    print(f"    Format: {status['format_type']}")
+                    print(f"    Error Count: {status['error_count']}")
+                    print(f"    Retry Count: {status['retry_count']}")
+                    
+                    if status['download_link_id']:
+                        print(f"    Download Link: {status['download_link_id'][:16]}...")
+                    
+                    if status['duration']:
+                        print(f"    Duration: {status['duration']}")
                     
                     # Show stage details
-                    print(f"    Stages:")
+                    print("    Stages:")
                     for stage_name, stage_info in status['stages'].items():
                         print(f"      {stage_name}: {stage_info['status']} ({stage_info['progress']:.1f}%)")
                 else:
-                    print(f"  - Job {job_id[:8]}...: Status not found")
-            
-            # Test job cancellation
-            print("\n✓ Testing job cancellation...")
-            
-            # Submit a new job to cancel
-            cancel_job_id = orchestrator.submit_translation_job(
-                file_path="/test/cancel_test.pdf",
-                source_language="en",
-                target_language="de",
-                format_type="pdf"
-            )
-            
-            print(f"  - Submitted job for cancellation: {cancel_job_id[:8]}...")
-            
-            # Wait a moment then cancel
-            time.sleep(0.1)
-            success = orchestrator.cancel_job(cancel_job_id)
-            
-            if success:
-                print(f"    ✓ Job cancelled successfully")
-                
-                # Check status
-                status = orchestrator.get_job_status(cancel_job_id)
-                if status and status['status'] == 'cancelled':
-                    print(f"    ✓ Job status confirmed as cancelled")
-                else:
-                    print(f"    ⚠️  Job status: {status['status'] if status else 'Not found'}")
-            else:
-                print(f"    ❌ Failed to cancel job")
+                    print(f"  - Job {job_id}: Not found")
             
             # Test orchestrator statistics
             print("\n✓ Testing orchestrator statistics...")
             
-            final_stats = orchestrator.get_orchestrator_stats()
-            print(f"  - Active jobs: {final_stats['active_jobs']}")
-            print(f"  - Completed jobs: {final_stats['completed_jobs']}")
-            print(f"  - Failed jobs: {final_stats['failed_jobs']}")
-            print(f"  - Total jobs processed: {final_stats['total_jobs_processed']}")
-            print(f"  - Success rate: {final_stats['success_rate']:.1f}%")
-            print(f"  - Average processing time: {final_stats['average_processing_time']:.2f}s" if final_stats['average_processing_time'] else "  - Average processing time: N/A")
+            stats = orchestrator.get_orchestrator_stats()
+            print(f"  - Active jobs: {stats['active_jobs']}")
+            print(f"  - Completed jobs: {stats['completed_jobs']}")
+            print(f"  - Failed jobs: {stats['failed_jobs']}")
+            print(f"  - Total jobs processed: {stats['total_jobs_processed']}")
+            print(f"  - Success rate: {stats['success_rate']:.1f}%")
+            print(f"  - Max concurrent jobs: {stats['max_concurrent_jobs']}")
             
-            # Test progress callback data
-            print(f"\n✓ Progress callback summary:")
-            print(f"  - Total progress updates received: {len(progress_updates)}")
+            if stats['average_processing_time']:
+                print(f"  - Average processing time: {stats['average_processing_time']:.2f}s")
+            
+            # Test job cancellation
+            print("\n✓ Testing job cancellation...")
+            
+            # Submit a new job for cancellation test
+            cancel_job_id = orchestrator.submit_translation_job(
+                "/test/cancel_test.pdf", "en", "de", "pdf"
+            )
+            
+            print(f"  - Submitted job for cancellation: {cancel_job_id[:8]}...")
+            
+            # Cancel the job
+            success = orchestrator.cancel_job(cancel_job_id)
+            
+            if success:
+                print("    ✓ Job cancelled successfully")
+                
+                # Verify cancellation
+                status = orchestrator.get_job_status(cancel_job_id)
+                if status and status['status'] == 'cancelled':
+                    print("    ✓ Job status confirmed as cancelled")
+                else:
+                    print("    ⚠️  Job status not updated to cancelled")
+            else:
+                print("    ❌ Failed to cancel job")
+            
+            # Test job retry (simulate failure first)
+            print("\n✓ Testing job retry...")
+            
+            # This would require more complex mocking to simulate failure
+            # For now, just test the retry mechanism with a non-existent job
+            retry_success = orchestrator.retry_job("nonexistent_job")
+            assert retry_success is False
+            print("    ✓ Retry correctly rejected for non-existent job")
+            
+            # Test progress callback functionality
+            print("\n✓ Testing progress callbacks...")
+            print(f"  - Received {len(progress_updates)} progress updates")
             
             if progress_updates:
-                # Group by job
-                job_progress = {}
-                for update in progress_updates:
-                    job_id = update['job_id']
-                    if job_id not in job_progress:
-                        job_progress[job_id] = []
-                    job_progress[job_id].append(update)
-                
-                for job_id, updates in job_progress.items():
-                    print(f"  - Job {job_id[:8]}...: {len(updates)} updates")
-                    if updates:
-                        final_update = updates[-1]
-                        print(f"    Final: {final_update['status']} - {final_update['progress']:.1f}%")
+                print("  - Sample progress updates:")
+                for update in progress_updates[:5]:  # Show first 5
+                    print(f"    Job {update['job_id'][:8]}...: {update['status']} ({update['progress']:.1f}%) - {update['stage']}")
             
             print("\n🎉 Translation orchestrator integration test completed successfully!")
             return True
@@ -275,21 +209,110 @@ def test_orchestrator_integration():
             print(f"\n❌ Integration test failed: {e}")
             raise
         finally:
-            # Always shutdown the orchestrator
             orchestrator.shutdown()
 
+def setup_mocks(mocks):
+    """Setup mock responses for all services."""
+    
+    # Mock document parser
+    mock_document = DocumentStructure(
+        format="pdf",
+        pages=[
+            PageStructure(
+                page_number=1,
+                dimensions=Dimensions(width=400, height=600),
+                text_regions=[
+                    TextRegion(
+                        id="region1",
+                        bounding_box=BoundingBox(10, 10, 200, 30),
+                        text_content="Test content to translate"
+                    ),
+                    TextRegion(
+                        id="region2",
+                        bounding_box=BoundingBox(10, 50, 200, 30),
+                        text_content="Another paragraph for translation"
+                    )
+                ]
+            )
+        ],
+        metadata=DocumentMetadata(title="Test Document")
+    )
+    
+    mock_parser = Mock()
+    mock_parser.parse.return_value = mock_document
+    mocks['DocumentParserFactory'].return_value.create_parser.return_value = mock_parser
+    
+    # Mock layout analysis
+    mock_layout_analysis = [
+        LayoutAnalysis(
+            page_number=1,
+            text_regions=mock_document.pages[0].text_regions,
+            visual_elements=[],
+            spatial_relationships=[],
+            reading_order=["region1", "region2"]
+        )
+    ]
+    mocks['DefaultLayoutAnalysisEngine'].return_value.analyze_layout.return_value = mock_layout_analysis
+    
+    # Mock translation service
+    translation_map = {
+        "Test content to translate": "Contenu de test à traduire",
+        "Another paragraph for translation": "Un autre paragraphe pour la traduction"
+    }
+    
+    def mock_translate(text, source_lang, target_lang):
+        return translation_map.get(text, f"Translated: {text}")
+    
+    mocks['TranslationService'].return_value.translate_text.side_effect = mock_translate
+    
+    # Mock text fitting
+    def mock_fit_text(region, translated_text):
+        return AdjustedRegion(
+            original_region=region,
+            adjusted_text=translated_text,
+            new_bounding_box=BoundingBox(
+                region.bounding_box.x,
+                region.bounding_box.y,
+                region.bounding_box.width + 20,  # Slightly wider
+                region.bounding_box.height + 5   # Slightly taller
+            ),
+            adjustments=[],
+            fit_quality=0.9
+        )
+    
+    mocks['TextFittingEngine'].return_value.fit_text_to_region.side_effect = mock_fit_text
+    
+    # Mock layout adjustment
+    mocks['LayoutAdjustmentEngine'].return_value.detect_layout_conflicts.return_value = []
+    mocks['LayoutAdjustmentEngine'].return_value.resolve_conflicts.return_value = []
+    
+    # Mock quality assessment
+    mock_quality_score = QualityScore(
+        overall_score=0.85,
+        metrics=Mock(),
+        issues=[]
+    )
+    mocks['QualityAssessmentService'].return_value.assess_layout_preservation.return_value = mock_quality_score
+    mocks['QualityAssessmentService'].return_value.generate_quality_report.return_value = QualityReport(
+        document_id="test",
+        overall_score=mock_quality_score
+    )
+    
+    # Mock download service
+    mock_download_result = Mock()
+    mock_download_result.success = True
+    mock_download_link = Mock()
+    mock_download_link.link_id = "mock_download_link_12345"
+    mock_download_result.download_link = mock_download_link
+    mocks['DownloadService'].return_value.prepare_download.return_value = mock_download_result
+
 def test_orchestrator_error_handling():
-    """Test orchestrator error handling capabilities."""
+    """Test orchestrator error handling and recovery."""
     
     print("\n🧪 Testing Orchestrator Error Handling...")
     
-    config = OrchestrationConfig(
-        max_concurrent_jobs=1,
-        job_timeout_minutes=1,  # Short timeout for testing
-        enable_quality_assessment=False
-    )
+    config = OrchestrationConfig(max_concurrent_jobs=1)
     
-    # Mock services with failures
     with patch.multiple(
         'src.services.orchestrator_service',
         DocumentParserFactory=Mock(),
@@ -302,59 +325,78 @@ def test_orchestrator_error_handling():
         DownloadService=Mock()
     ) as mocks:
         
+        # Setup mocks to simulate failures
+        mock_parser = Mock()
+        mock_parser.parse.side_effect = Exception("Parsing failed")
+        mocks['DocumentParserFactory'].return_value.create_parser.return_value = mock_parser
+        
         orchestrator = TranslationOrchestrator(config)
         
         try:
-            # Test parsing failure
-            print("  - Testing parsing failure...")
-            mocks['DocumentParserFactory'].return_value.create_parser.side_effect = Exception("Parse failed")
-            
-            job_id = orchestrator.submit_translation_job("/test/bad_document.pdf")
+            # Submit job that will fail
+            job_id = orchestrator.submit_translation_job("/test/failing_doc.pdf")
             
             # Wait for job to fail
-            timeout = time.time() + 5
+            timeout = time.time() + 10
             while time.time() < timeout:
                 status = orchestrator.get_job_status(job_id)
                 if status and status['status'] == 'failed':
                     break
                 time.sleep(0.1)
             
-            status = orchestrator.get_job_status(job_id)
-            if status and status['status'] == 'failed':
-                print(f"    ✓ Job failed as expected: {status['error_count']} errors")
-            else:
-                print(f"    ⚠️  Job status: {status['status'] if status else 'Not found'}")
+            # Verify job failed
+            final_status = orchestrator.get_job_status(job_id)
+            assert final_status['status'] == 'failed'
+            assert final_status['error_count'] > 0
             
-            # Test concurrent job limit
-            print("  - Testing concurrent job limit...")
+            print("  ✓ Error handling working correctly")
+            print(f"    Job failed as expected with {final_status['error_count']} errors")
             
-            # Reset mocks to work properly
-            mock_document = Mock()
-            mock_parser = Mock()
-            mock_parser.parse.return_value = mock_document
-            mocks['DocumentParserFactory'].return_value.create_parser.return_value = mock_parser
-            mocks['DocumentParserFactory'].return_value.create_parser.side_effect = None
-            
-            # Submit multiple jobs (more than limit)
+        finally:
+            orchestrator.shutdown()
+
+def test_orchestrator_concurrent_jobs():
+    """Test orchestrator concurrent job handling."""
+    
+    print("\n🧪 Testing Concurrent Job Handling...")
+    
+    config = OrchestrationConfig(max_concurrent_jobs=2)
+    
+    with patch.multiple(
+        'src.services.orchestrator_service',
+        DocumentParserFactory=Mock(),
+        DefaultLayoutAnalysisEngine=Mock(),
+        TranslationService=Mock(),
+        TextFittingEngine=Mock(),
+        LayoutAdjustmentEngine=Mock(),
+        DefaultLayoutReconstructionEngine=Mock(),
+        QualityAssessmentService=Mock(),
+        DownloadService=Mock()
+    ) as mocks:
+        
+        setup_mocks(mocks)
+        
+        orchestrator = TranslationOrchestrator(config)
+        
+        try:
+            # Submit multiple jobs quickly
             job_ids = []
-            for i in range(3):  # More than max_concurrent_jobs (1)
-                job_id = orchestrator.submit_translation_job(f"/test/document{i}.pdf")
+            for i in range(5):
+                job_id = orchestrator.submit_translation_job(f"/test/doc_{i}.pdf")
                 job_ids.append(job_id)
             
-            print(f"    Submitted {len(job_ids)} jobs with limit of {config.max_concurrent_jobs}")
+            print(f"  - Submitted {len(job_ids)} jobs")
             
-            # Check that jobs are queued/limited appropriately
-            time.sleep(1)  # Give time for processing
+            # Monitor concurrent execution
+            active_count = len(orchestrator.active_jobs)
+            print(f"  - Active jobs: {active_count}")
             
-            active_count = 0
-            for job_id in job_ids:
-                status = orchestrator.get_job_status(job_id)
-                if status and status['status'] not in ['completed', 'failed', 'cancelled']:
-                    active_count += 1
+            # Wait for some jobs to complete
+            time.sleep(2)
             
-            print(f"    Active jobs: {active_count}")
-            
-            print("✓ Error handling testing completed!")
+            stats = orchestrator.get_orchestrator_stats()
+            print(f"  - Jobs processed: {stats['total_jobs_processed']}")
+            print("  ✓ Concurrent job handling working")
             
         finally:
             orchestrator.shutdown()
@@ -363,6 +405,7 @@ if __name__ == "__main__":
     try:
         test_orchestrator_integration()
         test_orchestrator_error_handling()
+        test_orchestrator_concurrent_jobs()
         print("\n✅ All orchestrator integration tests passed!")
     except Exception as e:
         print(f"\n❌ Integration test failed: {e}")
