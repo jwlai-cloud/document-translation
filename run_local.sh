@@ -42,4 +42,4 @@ echo -e "${GREEN}✅ Setup complete!${NC}"
 echo -e "${GREEN}🌐 Starting application on http://localhost:7860${NC}"
 
 # Run the application
-python app.py
+python app
